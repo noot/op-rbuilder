@@ -60,6 +60,9 @@ pub struct OpRbuilderArgs {
     pub telemetry: TelemetryArgs,
     #[command(flatten)]
     pub flashtestations: FlashtestationsArgs,
+
+    #[arg(long = "p2p.port", env = "P2P_PORT", default_value = "9001")]
+    pub p2p_port: u16,
 }
 
 impl Default for OpRbuilderArgs {

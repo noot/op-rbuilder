@@ -31,6 +31,18 @@ impl FlashblocksServiceBuilder {
     {
         let once_lock = Arc::new(std::sync::OnceLock::new());
 
+        let (node, payload_tx, _) = crate::builders::flashblocks::p2p::NodeBuilder::new()
+            .with_port(self.0.p2p_port)
+            .try_build()
+            .unwrap();
+        let multiaddrs = node.multiaddrs();
+        ctx.task_executor().spawn(async move {
+            if let Err(e) = node.run().await {
+                tracing::error!(error = %e, "p2p node exited");
+            }
+        });
+        tracing::info!(multiaddrs = ?multiaddrs, "flashblocks p2p node started");
+
         let payload_builder = OpPayloadBuilder::new(
             OpEvmConfig::optimism(ctx.chain_spec()),
             pool,
@@ -38,6 +50,7 @@ impl FlashblocksServiceBuilder {
             self.0.clone(),
             builder_tx,
             once_lock.clone(),
+            payload_tx,
         )?;
 
         let payload_job_config = BasicPayloadJobGeneratorConfig::default();

@@ -1,4 +1,4 @@
-use super::{config::FlashblocksConfig, wspub::WebSocketPublisher};
+use super::config::FlashblocksConfig;
 use crate::{
     builders::{
         BuilderConfig, BuilderTx,
@@ -105,9 +105,8 @@ pub struct OpPayloadBuilder<Pool, Client, BT> {
     pub pool: Pool,
     /// Node client
     pub client: Client,
-    /// WebSocket publisher for broadcasting flashblocks
-    /// to all connected subscribers.
-    pub ws_pub: Arc<WebSocketPublisher>,
+    /// Sender for broadcasting outgoing payloads via p2p.
+    pub payload_tx: mpsc::Sender<FlashblocksPayloadV1>,
     /// System configuration for the builder
     pub config: BuilderConfig<FlashblocksConfig>,
     /// The metrics for the builder
@@ -131,14 +130,14 @@ impl<Pool, Client, BT> OpPayloadBuilder<Pool, Client, BT> {
         payload_builder_handle: Arc<
             OnceLock<tokio::sync::broadcast::Sender<Events<OpEngineTypes>>>,
         >,
+        payload_tx: mpsc::Sender<FlashblocksPayloadV1>,
     ) -> eyre::Result<Self> {
         let metrics = Arc::new(OpRBuilderMetrics::default());
-        let ws_pub = WebSocketPublisher::new(config.specific.ws_addr, Arc::clone(&metrics))?.into();
         Ok(Self {
             evm_config,
             pool,
             client,
-            ws_pub,
+            payload_tx,
             config,
             metrics,
             builder_tx,
@@ -189,7 +188,7 @@ where
     /// Given build arguments including an Optimism client, transaction pool,
     /// and configuration, this function creates a transaction payload. Returns
     /// a result indicating success with the payload or an error in case of failure.
-    fn build_payload(
+    async fn build_payload(
         &self,
         args: BuildArguments<OpPayloadBuilderAttributes<OpTransactionSigned>, OpBuiltPayload>,
         best_payload: BlockCell<OpBuiltPayload>,
@@ -296,9 +295,13 @@ where
         best_payload.set(payload.clone());
         self.send_payload_to_engine(payload);
 
-        let flashblock_byte_size = self
-            .ws_pub
-            .publish(&fb_payload)
+        let flashblock_byte_size = serde_json::to_string(&fb_payload)
+            .expect("can serialize flashblock")
+            .len(); // TODO: ideally we don't have to encode twice
+        let payload_id = fb_payload.payload_id;
+        self.payload_tx
+            .send(fb_payload)
+            .await
             .map_err(PayloadBuilderError::other)?;
         ctx.metrics
             .flashblock_byte_size_histogram
@@ -307,7 +310,7 @@ where
         info!(
             target: "payload_builder",
             message = "Fallback block built",
-            payload_id = fb_payload.payload_id.to_string(),
+            payload_id = payload_id.to_string(),
         );
 
         if ctx.attributes().no_tx_pool {
@@ -546,9 +549,9 @@ where
                                 );
                                 return Ok(());
                             }
-                            let flashblock_byte_size = self
-                                .ws_pub
-                                .publish(&fb_payload)
+                            self.payload_tx
+                                .send(fb_payload)
+                                .await
                                 .map_err(PayloadBuilderError::other)?;
 
                             // Record flashblock build duration
@@ -763,6 +766,7 @@ where
     }
 }
 
+#[async_trait::async_trait]
 impl<Pool, Client, BT> crate::builders::generator::PayloadBuilder
     for OpPayloadBuilder<Pool, Client, BT>
 where
@@ -773,12 +777,12 @@ where
     type Attributes = OpPayloadBuilderAttributes<OpTransactionSigned>;
     type BuiltPayload = OpBuiltPayload;
 
-    fn try_build(
+    async fn try_build(
         &self,
         args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
         best_payload: BlockCell<Self::BuiltPayload>,
     ) -> Result<(), PayloadBuilderError> {
-        self.build_payload(args, best_payload)
+        self.build_payload(args, best_payload).await
     }
 }
 

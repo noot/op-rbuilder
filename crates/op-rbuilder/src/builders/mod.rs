@@ -114,6 +114,9 @@ pub struct BuilderConfig<Specific: Clone> {
     pub specific: Specific,
     /// Maximum gas a transaction can use before being excluded.
     pub max_gas_per_txn: Option<u64>,
+
+    /// Port for the p2p node
+    pub p2p_port: u16,
 }
 
 impl<S: Debug + Clone> core::fmt::Debug for BuilderConfig<S> {
@@ -148,6 +151,7 @@ impl<S: Default + Clone> Default for BuilderConfig<S> {
             specific: S::default(),
             sampling_ratio: 100,
             max_gas_per_txn: None,
+            p2p_port: 9001,
         }
     }
 }
@@ -168,6 +172,7 @@ where
             da_config: Default::default(),
             sampling_ratio: args.telemetry.sampling_ratio,
             max_gas_per_txn: args.max_gas_per_txn,
+            p2p_port: args.p2p_port,
             specific: S::try_from(args)?,
         })
     }
