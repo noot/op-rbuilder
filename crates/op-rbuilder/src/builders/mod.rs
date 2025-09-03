@@ -172,7 +172,7 @@ where
             da_config: Default::default(),
             sampling_ratio: args.telemetry.sampling_ratio,
             max_gas_per_txn: args.max_gas_per_txn,
-            p2p_port: args.p2p_port,
+            p2p_port: args.flashblocks.flashblocks_p2p_port,
             specific: S::try_from(args)?,
         })
     }
