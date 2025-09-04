@@ -7,6 +7,7 @@ use crate::{
     flashtestations::service::spawn_flashtestations_service,
     traits::{NodeBounds, PoolBounds},
 };
+use eyre::WrapErr as _;
 use reth_basic_payload_builder::BasicPayloadJobGeneratorConfig;
 use reth_node_api::NodeTypes;
 use reth_node_builder::{BuilderContext, components::PayloadServiceBuilder};
@@ -31,10 +32,16 @@ impl FlashblocksServiceBuilder {
     {
         let once_lock = Arc::new(std::sync::OnceLock::new());
 
-        let (node, payload_tx, _) = crate::builders::flashblocks::p2p::NodeBuilder::new()
-            .with_port(self.0.p2p_port)
+        let mut builder =
+            crate::builders::flashblocks::p2p::NodeBuilder::new().with_port(self.0.p2p_port);
+
+        if let Some(ref private_key_hex) = self.0.p2p_private_key_hex {
+            builder = builder.with_keypair_hex_string(private_key_hex.clone());
+        }
+
+        let (node, payload_tx, _) = builder
             .try_build()
-            .unwrap();
+            .wrap_err("failed to build flashblocks p2p node")?;
         let multiaddrs = node.multiaddrs();
         ctx.task_executor().spawn(async move {
             if let Err(e) = node.run().await {

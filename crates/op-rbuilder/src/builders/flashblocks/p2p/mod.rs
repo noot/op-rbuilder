@@ -7,12 +7,15 @@ use peers::Peers;
 
 use eyre::Context;
 use libp2p::{
-    Multiaddr, PeerId, StreamProtocol, Swarm, Transport as _, identity, noise, swarm::SwarmEvent,
+    Multiaddr, PeerId, StreamProtocol, Swarm, Transport as _,
+    identity::{self, ed25519},
+    noise,
+    swarm::SwarmEvent,
     tcp, yamux,
 };
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, info, warn};
 
 use rollup_boost::FlashblocksPayloadV1;
 
@@ -30,14 +33,6 @@ pub(crate) struct Node {
 }
 
 impl Node {
-    pub(crate) fn peer_id(&self) -> PeerId {
-        self.peer_id
-    }
-
-    pub(crate) fn listen_addrs(&self) -> &[libp2p::Multiaddr] {
-        &self.listen_addrs
-    }
-
     /// Returns the multiaddresses that this node is listening on, with the peer ID included.
     pub(crate) fn multiaddrs(&self) -> Vec<libp2p::Multiaddr> {
         self.listen_addrs
@@ -105,7 +100,7 @@ impl Node {
                             connection_id,
                             ..
                         } => {
-                            debug!("connection established with peer {peer_id}");
+                            info!("connection established with peer {peer_id}");
                             if peers.has_peer(&peer_id) {
                                 swarm.close_connection(connection_id);
                                 debug!("already have connection with peer {peer_id}, closed connection {connection_id}");
@@ -117,10 +112,10 @@ impl Node {
                                     .await
                                 {
                                     Ok(stream) => { peers.insert_peer_and_stream(peer_id, stream);
-                                        debug!("opened stream with peer {peer_id} on connection {connection_id}");
+                                        info!("opened stream with peer {peer_id} on connection {connection_id}");
                                     }
                                     Err(e) => {
-                                        debug!("failed to open stream with peer {peer_id} on connection {connection_id}: {e:?}");
+                                        warn!("failed to open stream with peer {peer_id} on connection {connection_id}: {e:?}");
                                     }
                                 }
                             }
@@ -130,7 +125,7 @@ impl Node {
                             cause,
                             ..
                         } => {
-                            debug!("connection closed with peer {peer_id}: {cause:?}");
+                            info!("connection closed with peer {peer_id}: {cause:?}");
                             peers.remove_peer(&peer_id);
                         }
                         SwarmEvent::Behaviour(event) => event.handle().await,
@@ -138,6 +133,8 @@ impl Node {
                     }
                 },
                 Some(payload) = payload_rx.recv() => {
+                    let peer_count = swarm.network_info().num_peers();
+                    info!(peer_count, "received new payload to broadcast to peers");
                     peers.broadcast_payload(payload).await;
                 }
             }
@@ -148,7 +145,7 @@ impl Node {
 pub(crate) struct NodeBuilder {
     port: Option<u16>,
     listen_addrs: Vec<libp2p::Multiaddr>,
-    keypair: Option<identity::Keypair>,
+    keypair_hex: Option<String>,
     known_peers: Vec<Multiaddr>,
     cancellation_token: Option<tokio_util::sync::CancellationToken>,
 }
@@ -164,7 +161,7 @@ impl NodeBuilder {
         Self {
             port: None,
             listen_addrs: Vec::new(),
-            keypair: None,
+            keypair_hex: None,
             known_peers: Vec::new(),
             cancellation_token: None,
         }
@@ -175,21 +172,18 @@ impl NodeBuilder {
         self
     }
 
+    #[cfg(test)]
     pub(crate) fn with_listen_addr(mut self, addr: libp2p::Multiaddr) -> Self {
         self.listen_addrs.push(addr);
         self
     }
 
-    pub(crate) fn with_keypair(mut self, keypair: identity::Keypair) -> Self {
-        self.keypair = Some(keypair);
+    pub(crate) fn with_keypair_hex_string(mut self, keypair_hex: String) -> Self {
+        self.keypair_hex = Some(keypair_hex);
         self
     }
 
-    pub(crate) fn with_known_peer(mut self, address: Multiaddr) -> Self {
-        self.known_peers.push(address);
-        self
-    }
-
+    #[cfg(test)]
     pub(crate) fn with_known_peers<I, T>(mut self, addresses: I) -> Self
     where
         I: IntoIterator<Item = T>,
@@ -198,14 +192,6 @@ impl NodeBuilder {
         for address in addresses {
             self.known_peers.push(address.into());
         }
-        self
-    }
-
-    pub(crate) fn with_cancellation_token(
-        mut self,
-        cancellation_token: tokio_util::sync::CancellationToken,
-    ) -> Self {
-        self.cancellation_token = Some(cancellation_token);
         self
     }
 
@@ -219,11 +205,20 @@ impl NodeBuilder {
         let Self {
             port,
             mut listen_addrs,
-            keypair,
+            keypair_hex,
             known_peers,
             cancellation_token,
         } = self;
 
+        let keypair = match keypair_hex {
+            Some(hex) => {
+                let mut bytes = hex::decode(hex).wrap_err("failed to decode hex string")?;
+                let keypair = ed25519::Keypair::try_from_bytes(&mut bytes)
+                    .wrap_err("failed to create keypair from bytes: {e}")?;
+                Some(keypair.into())
+            }
+            None => None,
+        };
         let keypair = keypair.unwrap_or(identity::Keypair::generate_ed25519());
         let peer_id = keypair.public().to_peer_id();
 
@@ -317,5 +312,17 @@ mod test {
         let str = reader.next().await.unwrap().unwrap();
         let payload: FlashblocksPayloadV1 = serde_json::from_str(&str).unwrap();
         assert_eq!(payload, FlashblocksPayloadV1::default());
+    }
+
+    #[test]
+    fn keypair_bytes() {
+        let keypair_bytes: [u8; 64] = [
+            199, 26, 61, 48, 164, 132, 230, 125, 203, 208, 28, 76, 76, 224, 112, 73, 137, 190, 204,
+            81, 178, 231, 104, 215, 76, 192, 81, 82, 118, 245, 66, 188, 0, 223, 184, 72, 100, 129,
+            72, 193, 52, 253, 117, 234, 4, 27, 98, 57, 26, 99, 137, 167, 251, 30, 11, 246, 100,
+            174, 223, 146, 102, 143, 104, 229,
+        ];
+        let hex = hex::encode(keypair_bytes);
+        println!("{}", hex);
     }
 }
