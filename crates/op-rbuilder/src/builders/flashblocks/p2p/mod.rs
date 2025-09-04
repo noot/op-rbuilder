@@ -313,16 +313,4 @@ mod test {
         let payload: FlashblocksPayloadV1 = serde_json::from_str(&str).unwrap();
         assert_eq!(payload, FlashblocksPayloadV1::default());
     }
-
-    #[test]
-    fn keypair_bytes() {
-        let keypair_bytes: [u8; 64] = [
-            199, 26, 61, 48, 164, 132, 230, 125, 203, 208, 28, 76, 76, 224, 112, 73, 137, 190, 204,
-            81, 178, 231, 104, 215, 76, 192, 81, 82, 118, 245, 66, 188, 0, 223, 184, 72, 100, 129,
-            72, 193, 52, 253, 117, 234, 4, 27, 98, 57, 26, 99, 137, 167, 251, 30, 11, 246, 100,
-            174, 223, 146, 102, 143, 104, 229,
-        ];
-        let hex = hex::encode(keypair_bytes);
-        println!("{}", hex);
-    }
 }
